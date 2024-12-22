@@ -1,0 +1,12 @@
+python-dotenv
+langchain_google_genai
+flask
+streamlit
+requests
+flask_cors
+pymongo
+gunicorn
+langchain
+faiss-cpu
+langchain_community
+langgraph
