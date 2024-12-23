@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from database import DatabaseManager
 # from chat import ChatBot
-from agent import MultiAgentSystem
+from agent import Agent
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -221,7 +221,7 @@ def create_app():
         
         try:
             # Initialize agent with username
-            agent = MultiAgentSystem(username)
+            agent = Agent(username)
             
             # Generate response
             bot_response = agent.generate_bot_response(session_id, user_message)
