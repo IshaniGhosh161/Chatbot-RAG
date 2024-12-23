@@ -10,3 +10,5 @@ langchain
 faiss-cpu
 langchain_community
 langgraph
+ratelimit
+tenacity

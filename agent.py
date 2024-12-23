@@ -11,23 +11,38 @@ from langchain.schema import Document
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph, START
 from langchain_core.output_parsers import StrOutputParser
+from ratelimit import limits, sleep_and_retry
+from tenacity import retry, wait_exponential, stop_after_attempt
+
 
 load_dotenv()
 os.environ['GOOGLE_API_KEY']=os.getenv('GOOGLE_API_KEY')
 os.environ['TAVILY_API_KEY'] = os.getenv("TAVILY_API_KEY")
 
+# Rate limiting constants
+ONE_MINUTE = 60
+MAX_CALLS_PER_MINUTE = 15
+
 class Agent:
     def __init__(self,username):
         self.embedding=GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-        self.vector_store = FAISS.load_local('faiss_index', self.embedding, allow_dangerous_deserialization=True)
+        self.vector_store = FAISS.load_local('faiss_index', self.embedding, allow_dangerous_deserialization=True,normalize_L2=True)
         self.retriever=self.vector_store.as_retriever()
-        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
+                                          temperature=0,
+                                          retry_on_failure=True,
+                                          retry_on_quota=True,
+                                          max_retries=3,
+                                          initial_delay=2,  # Start with 2 second delay
+                                          exponential_base=2,  # Double the delay with each retry
+                                          max_delay=10  # Maximum delay between retries
+                                          )
         self.web_search_tool = TavilySearchResults(k=3)
         self.app = self._build_workflow()
         self.db = DatabaseManager()
         self.username = username
         
-    def _load_chat_history(self,session_id,max_messages=10):
+    def _load_chat_history(self,session_id,max_messages=5):
         """Load chat history from database for current session"""
         messages = self.db.get_chat_messages(session_id)
         if not messages:
@@ -109,7 +124,10 @@ class Agent:
         workflow.add_edge("call_llm",END)
         app = workflow.compile()
         return app
-
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def _build_query(self,state):
         """
         Transform the query to produce a context aware question.
@@ -149,7 +167,10 @@ class Agent:
         # Re-write question
         better_question = question_build.invoke({"question": question,"history":history})
         return {"history": history, "question": better_question, "session_id": session_id}
-        
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )        
     def _route_question(self,state):
         """
         Route question to web search or RAG or llm.
@@ -218,7 +239,10 @@ class Agent:
         web_results = Document(page_content=web_results)
         print(web_results)
         return {"documents": web_results, "question": question}
-
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def _call_llm(self,state):
         """
         Call LLM for generic conversation.
@@ -261,7 +285,10 @@ class Agent:
         # Retrieval
         documents = self.retriever.invoke(question)
         return {"documents": documents, "question": question}
-
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def _grade_documents(self,state):
         """
         Determines whether the retrieved documents are relevant to the question.
@@ -344,7 +371,10 @@ class Agent:
             # We have relevant documents, so generate answer
             print("---DECISION: GENERATE---")
             return "found relevant document"
-
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def _generate(self,state):
         """
         Generate answer
@@ -382,7 +412,10 @@ class Agent:
         # RAG generation
         generation = rag_chain.invoke({"context": documents, "question": question})
         return {"documents": documents, "question": question, "generation": generation}
-    
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )    
     def _grade_generation_v_documents_and_question(self,state):
         """
         Determines whether the generation is grounded in the document and answers question.
@@ -465,7 +498,10 @@ class Agent:
         else:
             print("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
             return "not supported"
-        
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def _transform_query(self,state):
         """
         Transform the query to produce a better question.
@@ -502,6 +538,12 @@ class Agent:
         better_question = question_rewriter.invoke({"question": question})
         return {"documents": documents, "question": better_question}
     
+    @sleep_and_retry
+    @limits(calls=MAX_CALLS_PER_MINUTE, period=ONE_MINUTE)
+    @retry(
+        wait=wait_exponential(multiplier=1, min=4, max=20),
+        stop=stop_after_attempt(5)
+    )
     def generate_bot_response(self, session_id, user_message):
         """
         Generate a bot response for a given user message.
