@@ -1,9 +1,9 @@
 from dotenv import load_dotenv
 import os
 from langchain_community.vectorstores import FAISS
-from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings,ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
-from typing import Literal, List, Dict, Any
+from typing import Literal,List
 from typing_extensions import TypedDict
 from database import DatabaseManager
 from langchain_core.prompts import ChatPromptTemplate
@@ -11,270 +11,44 @@ from langchain.schema import Document
 from pydantic import BaseModel, Field
 from langgraph.graph import END, StateGraph, START
 from langchain_core.output_parsers import StrOutputParser
-from abc import ABC, abstractmethod
-# from IPython.display import Image, display
 
-# Load environment variables
 load_dotenv()
-os.environ['GOOGLE_API_KEY'] = os.getenv('GOOGLE_API_KEY')
+os.environ['GOOGLE_API_KEY']=os.getenv('GOOGLE_API_KEY')
 os.environ['TAVILY_API_KEY'] = os.getenv("TAVILY_API_KEY")
 
-class BaseAgent(ABC):
-    """Abstract base class for all agents"""
-    def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
-    
-    @abstractmethod
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        pass
-
-class QueryAgent(BaseAgent):
-    """Agent responsible for understanding and transforming queries"""
-    def __init__(self, db_manager: DatabaseManager):
-        super().__init__()
-        self.db = db_manager
-
-    def _load_chat_history(self, session_id, max_messages=10):
-        """Load chat history from database"""
-        messages = self.db.get_chat_messages(session_id)
-        if not messages:
-            return []
-        context = messages[-max_messages:-1]
-        return [{"user": msg["username"], "message": msg["message"]} 
-                for msg in context]
-
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        prompt = """Task:
-        Rewrite the given query to make it clear and precise. Use the conversation history if the query depends on prior context.
-
-        Instructions:
-        Analyze the query to determine if it refers to previous context.
-        If context is required:
-        Refer to the conversation history to resolve ambiguities and rewrite the query.
-        If the query is standalone and no need for improvement, return the query as-is.
-        
-        Inputs:
-        Original Query: {question}
-        Conversation History: {history} (formatted as username:message)
-        """
-        query_build_prompt = ChatPromptTemplate.from_template(prompt)
-        question_build = query_build_prompt | self.llm | StrOutputParser()
-        
-        question = state["question"]
-        session_id = state.get("session_id")
-        history = self._load_chat_history(session_id) if session_id else []
-        better_question = question_build.invoke({"question": question, "history": history})
-        
-        return {"history": history, "question": better_question, "session_id": session_id}
-
-class RouterAgent(BaseAgent):
-    """Agent responsible for routing queries to appropriate data sources"""
-    def process(self, state: Dict[str, Any]) -> str:
-        class RouteQuery(BaseModel):
-            datasource: Literal["vectorstore", "web-search", "llm"] = Field(
-                description="Route queries to vectorstore, web search, or llm"
-            )
-
-        structured_llm_router = self.llm.with_structured_output(RouteQuery)
-        system = """You are an expert at routing user questions.
-        The vectorstore contains documents about agents, prompt engineering, and adversarial attacks.
-        Use vectorstore for these topics. Otherwise, use web-search.
-        For generic conversation choose llm"""
-        
-        route_prompt = ChatPromptTemplate.from_messages([
-            ("system", system),
-            ("human", "{question}"),
-        ])
-
-        question_router = route_prompt | structured_llm_router
-        source = question_router.invoke({"question": state["question"]})
-        return source.datasource
-
-class RetrievalAgent(BaseAgent):
-    """Agent responsible for retrieving information from vector store"""
-    def __init__(self):
-        super().__init__()
-        self.embedding = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
+class Agent:
+    def __init__(self,username):
+        self.embedding=GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         self.vector_store = FAISS.load_local('faiss_index', self.embedding, allow_dangerous_deserialization=True)
-        self.retriever = self.vector_store.as_retriever()
-
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        documents = self.retriever.invoke(state["question"])
-        return {"documents": documents, "question": state["question"]}
-
-class WebSearchAgent(BaseAgent):
-    """Agent responsible for web search operations"""
-    def __init__(self):
-        super().__init__()
+        self.retriever=self.vector_store.as_retriever()
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
         self.web_search_tool = TavilySearchResults(k=3)
-
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        docs = self.web_search_tool.invoke({"query": state["question"]})
-        web_results = "\n".join([d["content"] for d in docs])
-        web_results = Document(page_content=web_results)
-        return {"documents": web_results, "question": state["question"]}
-    
-class DirectLLMAgent(BaseAgent):
-    """Agent responsible for direct LLM interactions without retrieval"""
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        prompt_template = """
-        Answer the question as detailed as possible based on your knowledge, make sure to provide all the details,
-        if you don't know the answer just say, 'answer is not available in my knowledge base', don't provide
-        the wrong answer. If it is generic text, answer accordingly.
-        
-        Question:\n{question}\n
-        Answer:
-        """
-        
-        response = self.llm.invoke(prompt_template.format(question=state["question"]))
-        return {
-            "documents": [],
-            "question": state["question"],
-            "generation": response.content
-        }
-
-class DocumentGradingAgent(BaseAgent):
-    """Agent responsible for grading document relevance"""
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        class GradeDocuments(BaseModel):
-            binary_score: str = Field(
-                description="Documents are relevant to the question, 'yes' or 'no'"
-            )
-
-        structured_llm_grader = self.llm.with_structured_output(GradeDocuments)
-        system = """Grade the relevance of retrieved documents to the user question.
-        If document contains keywords or semantic meaning related to the question, grade as relevant.
-        Give a binary 'yes' or 'no' score."""
-        
-        grade_prompt = ChatPromptTemplate.from_messages([
-            ("system", system),
-            ("human", "Retrieved document: \n\n {document} \n\n User question: {question}"),
-        ])
-
-        retrieval_grader = grade_prompt | structured_llm_grader
-        
-        filtered_docs = []
-        for doc in state["documents"]:
-            score = retrieval_grader.invoke({
-                "question": state["question"], 
-                "document": doc.page_content
-            })
-            if score.binary_score == "yes":
-                filtered_docs.append(doc)
-                
-        return {"documents": filtered_docs, "question": state["question"]}
-
-class GenerationAgent(BaseAgent):
-    """Agent responsible for generating answers"""
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        prompt = """
-        Answer the question as detailed as possible from the provided contexts.
-        If answer is not in context say 'answer is not available in the context'.
-        Don't provide wrong answers.
-        
-        Context:\n{context}\n
-        Question:\n{question}\n
-        Answer:
-        """
-        prompt_template = ChatPromptTemplate.from_template(prompt)
-        rag_chain = prompt_template | self.llm | StrOutputParser()
-        
-        generation = rag_chain.invoke({
-            "context": state["documents"], 
-            "question": state["question"]
-        })
-        return {
-            "documents": state["documents"],
-            "question": state["question"],
-            "generation": generation
-        }
-
-class QualityCheckAgent(BaseAgent):
-    """Agent responsible for checking generation quality"""
-    def process(self, state: Dict[str, Any]) -> str:
-        # Check for hallucinations
-        class GradeHallucinations(BaseModel):
-            binary_score: str = Field(
-                description="Answer is grounded in facts, 'yes' or 'no'"
-            )
-
-        structured_hallucination_grader = self.llm.with_structured_output(GradeHallucinations)
-        hallucination_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Grade whether LLM generation is grounded in retrieved facts."),
-            ("human", "Facts: \n\n {documents} \n\n Generation: {generation}"),
-        ])
-        
-        hallucination_grader = hallucination_prompt | structured_hallucination_grader
-        
-        # Check if answer addresses question
-        class GradeAnswer(BaseModel):
-            binary_score: str = Field(
-                description="Answer addresses question, 'yes' or 'no'"
-            )
-
-        structured_answer_grader = self.llm.with_structured_output(GradeAnswer)
-        answer_prompt = ChatPromptTemplate.from_messages([
-            ("system", "Grade whether answer addresses/resolves question"),
-            ("human", "Question: \n\n {question} \n\n Generation: {generation}"),
-        ])
-        
-        answer_grader = answer_prompt | structured_answer_grader
-
-        # Process checks
-        hallucination_score = hallucination_grader.invoke({
-            "documents": state["documents"],
-            "generation": state["generation"]
-        })
-        
-        if hallucination_score.binary_score == "yes":
-            answer_score = answer_grader.invoke({
-                "question": state["question"],
-                "generation": state["generation"]
-            })
-            return "useful" if answer_score.binary_score == "yes" else "not useful"
-        return "not supported"
-
-class QueryTransformationAgent(BaseAgent):
-    """Agent responsible for transforming queries when initial search fails"""
-    def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        system = """You are a question re-writer that converts an input question to a better version optimized \n 
-            for vectorstore retrieval. Look at the input and try to reason about the underlying semantic intent / meaning."""
-        re_write_prompt = ChatPromptTemplate.from_messages([
-            ("system", system),
-            ("human", "Here is the initial question: \n\n {question} \n Formulate an improved question."),
-        ])
-
-        question_rewriter = re_write_prompt | self.llm | StrOutputParser()
-        better_question = question_rewriter.invoke({"question": state["question"]})
-        
-        return {
-            "documents": state["documents"], 
-            "question": better_question
-        }
-
-class MultiAgentSystem:
-    """Orchestrates multiple agents in a workflow"""
-    def __init__(self, username: str):
+        self.app = self._build_workflow()
         self.db = DatabaseManager()
         self.username = username
         
-        # Initialize agents
-        self.query_agent = QueryAgent(self.db)
-        self.router_agent = RouterAgent()
-        self.retrieval_agent = RetrievalAgent()
-        self.web_search_agent = WebSearchAgent()
-        self.direct_llm_agent = DirectLLMAgent()
-        self.document_grading_agent = DocumentGradingAgent()
-        self.generation_agent = GenerationAgent()
-        self.quality_check_agent = QualityCheckAgent()
-        self.query_transformation_agent = QueryTransformationAgent()
+    def _load_chat_history(self,session_id,max_messages=10):
+        """Load chat history from database for current session"""
+        messages = self.db.get_chat_messages(session_id)
+        if not messages:
+            return []
+        # Use the most recent messages up to `max_messages`
+        context = messages[-max_messages:-1]
+        return [{"user": msg["username"], "message": msg["message"]} 
+                   for msg in context]
         
-        # Build workflow
-        self.app = self._build_workflow()
-
-    def _build_workflow(self) -> StateGraph:
-        """Build and return the workflow graph"""
+    def _build_workflow(self):
         class GraphState(TypedDict):
+            """
+            Represents the state of our graph.
+
+            Attributes:
+                question: question
+                generation: LLM generation
+                documents: list of documents
+                history: conversation history
+                session_id: chat session id
+            """
             question: str
             generation: str
             documents: List[str]
@@ -283,85 +57,462 @@ class MultiAgentSystem:
             
         workflow = StateGraph(GraphState)
 
-        # Add nodes for each agent
-        workflow.add_node("build_query", self.query_agent.process)
-        workflow.add_node("web_search", self.web_search_agent.process)
-        workflow.add_node("call_llm", self.direct_llm_agent.process)
-        workflow.add_node("retrieve", self.retrieval_agent.process)
-        workflow.add_node("grade_documents", self.document_grading_agent.process)
-        workflow.add_node("generate", self.generation_agent.process)
-        workflow.add_node("transform_query", self.query_transformation_agent.process)
+        # Define the nodes
+        workflow.add_node("build_query", self._build_query)
+        workflow.add_node("web_search", self._web_search)  # web search
+        workflow.add_node("call_llm",self._call_llm)
+        workflow.add_node("retrieve", self._retrieve)  # retrieve
+        workflow.add_node("grade_documents", self._grade_documents)  # grade documents
+        workflow.add_node("generate", self._generate)  # generatae
+        workflow.add_node("transform_query", self._transform_query)  # transform_query
 
-        # Helper function to determine next step after document grading
-        def decide_to_generate(state):
-            if not state["documents"]:
-                return "no relevant document"
-            return "found relevant document"
-
-        # Define workflow edges
-        workflow.add_edge(START, "build_query")
+        # Build graph
+        workflow.add_edge(START,"build_query")
         workflow.add_conditional_edges(
             "build_query",
-            self.router_agent.process,
+            self._route_question,
             {
                 "web-search": "web_search",
                 "vectorstore": "retrieve",
                 "llm": "call_llm"
-            }
+            },
         )
         workflow.add_edge("web_search", "generate")
         workflow.add_edge("retrieve", "grade_documents")
-        
-        # Add conditional edges for document grading outcomes
         workflow.add_conditional_edges(
             "grade_documents",
-            decide_to_generate,
+            self._decide_to_generate,
             {
                 "no relevant document": "transform_query",
                 "found relevant document": "generate",
-            }
+            },
         )
-        
-        # Add edges for query transformation
+        # workflow.add_edge("transform_query", "retrieve")
         workflow.add_conditional_edges(
             "transform_query",
-            self.router_agent.process,
+            self._route_question,
             {
                 "web-search": "web_search",
                 "vectorstore": "retrieve",
                 "llm": "call_llm"
-            }
+            },
         )
-        
-        # Add conditional edges for generation quality check
         workflow.add_conditional_edges(
             "generate",
-            self.quality_check_agent.process,
+            self._grade_generation_v_documents_and_question,
             {
+                "not supported": "generate",
                 "useful": END,
                 "not useful": "transform_query",
-                "not supported": "generate"
-            }
+            },
         )
         workflow.add_edge("call_llm",END)
-        # app = workflow.compile()
-        # try:
-        #     # Generate the image
-        #     img = Image(app.get_graph().draw_mermaid_png())
-            
-        #     # Display the image
-        #     display(img)
-            
-        #     # Save the image to a file
-        #     with open("graph_image.png", "wb") as file:
-        #         file.write(img.data)
-        # except Exception as e:
-        #     # Handle exceptions if any
-        #     print(f"An error occurred: {e}")
-        return workflow.compile()
+        app = workflow.compile()
+        return app
 
-    def generate_bot_response(self, session_id: str, user_message: str) -> str:
-        """Generate response using the multi-agent system"""
+    def _build_query(self,state):
+        """
+        Transform the query to produce a context aware question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): Updates question key with a re-phrased question
+        """
+        
+        # Prompt
+        prompt = """Task:
+        Rewrite the given query to make it clear and precise. Use the conversation history if the query depends on prior context.
+
+        Instructions:
+
+        Analyze the query to determine if it refers to previous context.
+        If context is required:
+        Refer to the conversation history to resolve ambiguities and rewrite the query.
+        If the query is standalone and no need for improvememt, return the query as-is.
+        
+        Inputs:
+        Original Query: {question}
+        Conversation History: {history} (formatted as username:message)
+
+        """
+        query_build_prompt = ChatPromptTemplate.from_template(prompt)
+
+        question_build = query_build_prompt | self.llm | StrOutputParser()
+        
+        print("---BUILD QUERY---")
+        question = state["question"]
+        session_id = state.get("session_id")
+        history = self._load_chat_history(session_id)  if session_id else []
+
+        # Re-write question
+        better_question = question_build.invoke({"question": question,"history":history})
+        return {"history": history, "question": better_question, "session_id": session_id}
+        
+    def _route_question(self,state):
+        """
+        Route question to web search or RAG or llm.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            str: Next node to call
+        """
+        # Data model
+        class RouteQuery(BaseModel):
+            """Route a user query to the most relevant datasource."""
+
+            datasource: Literal["vectorstore", "web-search","llm"] = Field(
+                ...,
+                description="Given a user question choose to route it to web search or a vectorstore or llm.",
+            )
+
+        # LLM with function call
+        structured_llm_router = self.llm.with_structured_output(RouteQuery)
+
+        # Prompt
+        system = """You are an expert at routing a user question to a vectorstore or web search or llm.
+        The vectorstore contains documents related to agents, prompt engineering, and adversarial attacks.
+        Use the vectorstore for questions on these topics. Otherwise, use web-search.
+        For generic query/conversation choose llm"""
+        route_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                ("human", "{question}"),
+            ]
+        )
+
+        question_router = route_prompt | structured_llm_router
+        
+        print("---ROUTE QUESTION---")
+        question = state["question"]
+        source = question_router.invoke({"question": question})
+        print(source.datasource)
+        if source.datasource == "web-search":
+            print("---ROUTE QUESTION TO WEB SEARCH---")
+            return "web-search"
+        elif source.datasource == "vectorstore":
+            print("---ROUTE QUESTION TO RAG---")
+            return "vectorstore"
+        else:
+            print("---ROUTE QUESTION TO LLM---")
+            return "llm"
+    def _web_search(self,state):
+        """
+        Web search based on the re-phrased question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): Updates documents key with appended web results
+        """
+        print("---WEB SEARCH---")
+        question = state["question"]
+
+        # Web search
+        docs = self.web_search_tool.invoke({"query": question})
+        web_results = "\n".join([d["content"] for d in docs])
+        web_results = Document(page_content=web_results)
+        print(web_results)
+        return {"documents": web_results, "question": question}
+
+    def _call_llm(self,state):
+        """
+        Call LLM for generic conversation.
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): Updates generation key with llm results
+        """
+        
+        print("---LLM---")
+        question = state["question"]
+        
+        prompt_template = f"""
+        Answer the question as detailed as possible based on your knowledge , make sure to provide all the details,
+        if you don't known the answer just say, 'answer is not available in my knowledge base', don't provide
+        the wrong answer. If it is generic text, answer accordingly
+        Question:\n{question}\n
+
+        Answer:
+        """
+        response=self.llm.invoke(prompt_template)
+        print(response.content)
+        return {"documents": [], "question": question, "generation": response.content}
+
+    def _retrieve(self,state):
+        """
+        Retrieve documents
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): New key added to state, documents, that contains retrieved documents
+        """
+        
+        print("---RETRIEVE---")
+        question = state["question"]
+
+        # Retrieval
+        documents = self.retriever.invoke(question)
+        return {"documents": documents, "question": question}
+
+    def _grade_documents(self,state):
+        """
+        Determines whether the retrieved documents are relevant to the question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): Updates documents key with only filtered relevant documents
+        """
+        
+        # Data model
+        class GradeDocuments(BaseModel):
+            """Binary score for relevance check on retrieved documents."""
+
+            binary_score: str = Field(
+                description="Documents are relevant to the question, 'yes' or 'no'"
+            )
+
+
+        # LLM with function call
+        structured_llm_grader = self.llm.with_structured_output(GradeDocuments)
+
+        # Prompt
+        system = """You are a grader assessing relevance of a retrieved document to a user question. \n 
+            If the document contains keyword(s) or semantic meaning related to the user question, grade it as relevant. \n
+            It does not need to be a stringent test. The goal is to filter out erroneous retrievals. \n
+            Give a binary score 'yes' or 'no' score to indicate whether the document is relevant to the question."""
+        grade_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                ("human", "Retrieved document: \n\n {document} \n\n User question: {question}"),
+            ]
+        )
+
+        retrieval_grader = grade_prompt | structured_llm_grader
+        
+        print("---CHECK DOCUMENT RELEVANCE TO QUESTION---")
+        question = state["question"]
+        documents = state["documents"]
+
+        # Score each doc
+        filtered_docs = []
+        for d in documents:
+            score = retrieval_grader.invoke(
+                {"question": question, "document": d.page_content}
+            )
+            grade = score.binary_score
+            if grade == "yes":
+                print("---GRADE: DOCUMENT RELEVANT---")
+                filtered_docs.append(d)
+            else:
+                print("---GRADE: DOCUMENT NOT RELEVANT---")
+                continue
+        return {"documents": filtered_docs, "question": question}
+
+    def _decide_to_generate(self,state):
+        """
+        Determines whether to generate an answer, or re-generate a question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            str: Binary decision for next node to call
+        """
+
+        print("---ASSESS GRADED DOCUMENTS---")
+        state["question"]
+        filtered_documents = state["documents"]
+
+        if not filtered_documents:
+            # All documents have been filtered check_relevance
+            # We will re-generate a new query
+            print(
+                "---DECISION: ALL DOCUMENTS ARE NOT RELEVANT TO QUESTION, TRANSFORM QUERY---"
+            )
+            return "no relevant document"
+        else:
+            # We have relevant documents, so generate answer
+            print("---DECISION: GENERATE---")
+            return "found relevant document"
+
+    def _generate(self,state):
+        """
+        Generate answer
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): New key added to state, generation, that contains LLM generation
+        """
+        # Prompt
+        prompt = """
+        You are assistant is question answering task. Answer the question as detailed as possible from the provided contexts, 
+        make sure to provide all the details, if the answer is not in the provided context just say, 
+        'answer is not available in the context', don't provide the wrong answer.
+        Context:\n{context}\n
+        Question:\n{question}\n
+
+        Answer:
+        """
+        prompt = ChatPromptTemplate.from_template(template=prompt)
+
+        # Post-processing
+        def format_docs(docs):
+            return "\n\n".join(doc.page_content for doc in docs)
+
+
+        # Chain
+        rag_chain = prompt | self.llm | StrOutputParser()
+        
+        print("---GENERATE---")
+        question = state["question"]
+        documents = state["documents"]
+
+        # RAG generation
+        generation = rag_chain.invoke({"context": documents, "question": question})
+        return {"documents": documents, "question": question, "generation": generation}
+    
+    def _grade_generation_v_documents_and_question(self,state):
+        """
+        Determines whether the generation is grounded in the document and answers question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            str: Decision for next node to call
+        """
+        # Data model
+        class GradeHallucinations(BaseModel):
+            """Binary score for hallucination present in generation answer."""
+
+            binary_score: str = Field(
+                description="Answer is grounded in the facts, 'yes' or 'no'"
+            )
+
+        # LLM with function call
+        structured_llm_grader = self.llm.with_structured_output(GradeHallucinations)
+
+        # Prompt
+        system = """You are a grader assessing whether an LLM generation is grounded in / supported by a set of retrieved facts. \n 
+            Give a binary score 'yes' or 'no'. 'Yes' means that the answer is grounded in / supported by the set of facts."""
+        hallucination_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                ("human", "Set of facts: \n\n {documents} \n\n LLM generation: {generation}"),
+            ]
+        )
+
+        hallucination_grader = hallucination_prompt | structured_llm_grader
+
+        # Data model
+        class GradeAnswer(BaseModel):
+            """Binary score to assess answer addresses question."""
+
+            binary_score: str = Field(
+                description="Answer addresses the question, 'yes' or 'no'"
+            )
+
+
+        # LLM with function call
+        structured_llm_grader = self.llm.with_structured_output(GradeAnswer)
+
+        # Prompt
+        system = """You are a grader assessing whether an answer addresses / resolves a question \n 
+            Give a binary score 'yes' or 'no'. Yes' means that the answer resolves the question."""
+        answer_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                ("human", "User question: \n\n {question} \n\n LLM generation: {generation}"),
+            ]
+        )
+
+        answer_grader = answer_prompt | structured_llm_grader
+        
+        print("---CHECK HALLUCINATIONS---")
+        question = state["question"]
+        documents = state["documents"]
+        generation = state["generation"]
+
+        score = hallucination_grader.invoke(
+            {"documents": documents, "generation": generation}
+        )
+        grade = score.binary_score
+        # Check hallucination
+        if grade == "yes":
+            print("---DECISION: GENERATION IS GROUNDED IN DOCUMENTS---")
+            # Check question-answering
+            print("---GRADE GENERATION vs QUESTION---")
+            score = answer_grader.invoke({"question": question, "generation": generation})
+            grade = score.binary_score
+            if grade == "yes":
+                print("---DECISION: GENERATION ADDRESSES QUESTION---")
+                return "useful"
+            else:
+                print("---DECISION: GENERATION DOES NOT ADDRESS QUESTION---")
+                return "not useful"
+        else:
+            print("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
+            return "not supported"
+        
+    def _transform_query(self,state):
+        """
+        Transform the query to produce a better question.
+
+        Args:
+            state (dict): The current graph state
+
+        Returns:
+            state (dict): Updates question key with a re-phrased question
+        """
+
+        ### Question Re-writer
+
+        # Prompt
+        system = """You a question re-writer that converts an input question to a better version that is optimized \n 
+            for vectorstore retrieval. Look at the input and try to reason about the underlying semantic intent / meaning."""
+        re_write_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", system),
+                (
+                    "human",
+                    "Here is the initial question: \n\n {question} \n Formulate an improved question.",
+                ),
+            ]
+        )
+
+        question_rewriter = re_write_prompt | self.llm | StrOutputParser()
+
+        print("---TRANSFORM QUERY---")
+        question = state["question"]
+        documents = state["documents"]
+
+        # Re-write question
+        better_question = question_rewriter.invoke({"question": question})
+        return {"documents": documents, "question": better_question}
+    
+    def generate_bot_response(self, session_id, user_message):
+        """
+        Generate a bot response for a given user message.
+        
+        Args:
+            session_id (str): The current chat session ID
+            user_message (str): The user's message to respond to
+            
+        Returns:
+            str: The generated bot response
+        """
         try:
             inputs = {
                 "question": user_message,
@@ -369,12 +520,16 @@ class MultiAgentSystem:
             }
             
             final_output = None
+            
+            # Process all outputs from the graph
             for output in self.app.stream(inputs):
                 final_output = output
                 
+            # Return the final generation if available
             if final_output and 'generation' in final_output.get(list(final_output.keys())[-1], {}):
                 return final_output[list(final_output.keys())[-1]]['generation']
-            return "I apologize, but I wasn't able to generate a response."
+            else:
+                return "I apologize, but I wasn't able to generate a response."
                 
         except Exception as e:
             return f"Error generating response: {str(e)}"
