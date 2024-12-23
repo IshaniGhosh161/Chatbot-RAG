@@ -387,9 +387,9 @@ class Agent:
         """
         # Prompt
         prompt = """
-        You are assistant is question answering task. Answer the question as detailed as possible from the provided contexts, 
-        make sure to provide all the details, if the answer is not in the provided context just say, 
-        'answer is not available in the context', don't provide the wrong answer.
+        You are an assistant in question answering task. Provide detailed answer to the question based on the provided context. 
+        If the answer is not in the provided context, respond with 'answer is not available in the context', 
+        don't provide the wrong answer.
         Context:\n{context}\n
         Question:\n{question}\n
 
