@@ -4,7 +4,8 @@ from flask import Flask, request, jsonify, make_response
 from flask_cors import CORS
 from database import DatabaseManager
 # from chat import ChatBot
-from agent import Agent
+# from agent import Agent
+from agent2 import MultiAgentSystem as Agent
 
 # Add project root to path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
