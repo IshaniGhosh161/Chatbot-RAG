@@ -14,7 +14,7 @@ from langchain_core.output_parsers import StrOutputParser
 from abc import ABC, abstractmethod
 from ratelimit import limits, sleep_and_retry
 from tenacity import retry, wait_exponential, stop_after_attempt
-from IPython.display import Image, display
+# from IPython.display import Image, display
 
 # Load environment variables
 load_dotenv()
@@ -427,20 +427,20 @@ class MultiAgentSystem:
             }
         )
         workflow.add_edge("call_llm",END)
-        app = workflow.compile()
-        try:
-            # Generate the image
-            img = Image(app.get_graph().draw_mermaid_png())
+        # app = workflow.compile()
+        # try:
+        #     # Generate the image
+        #     img = Image(app.get_graph().draw_mermaid_png())
             
-            # Display the image
-            display(img)
+        #     # Display the image
+        #     display(img)
             
-            # Save the image to a file
-            with open("graph_image.png", "wb") as file:
-                file.write(img.data)
-        except Exception as e:
-            # Handle exceptions if any
-            print(f"An error occurred: {e}")
+        #     # Save the image to a file
+        #     with open("graph_image.png", "wb") as file:
+        #         file.write(img.data)
+        # except Exception as e:
+        #     # Handle exceptions if any
+        #     print(f"An error occurred: {e}")
         return workflow.compile()
 
     @sleep_and_retry
