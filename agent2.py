@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 import os
 from langchain_community.vectorstores import FAISS
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from typing import Literal, List, Dict, Any
@@ -21,7 +21,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 load_dotenv()
 os.environ['GOOGLE_API_KEY'] = os.getenv('GOOGLE_API_KEY')
 os.environ['TAVILY_API_KEY'] = os.getenv("TAVILY_API_KEY")
-os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
+# os.environ['GROQ_API_KEY'] = os.getenv("GROQ_API_KEY")
 
 # Rate limiting constants
 ONE_MINUTE = 60
@@ -30,30 +30,30 @@ MAX_CALLS_PER_MINUTE = 15
 class BaseAgent(ABC):
     """Abstract base class for all agents"""
     def __init__(self):
-        # self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
-        #                                   temperature=0,
-        #                                   retry_on_failure=True,
-        #                                   retry_on_quota=True,
-        #                                   max_retries=3,
-        #                                   initial_delay=2,  # Start with 2 second delay
-        #                                   exponential_base=2,  # Double the delay with each retry
-        #                                   max_delay=10  # Maximum delay between retries
-        #                                   )
-        # Configure model kwargs properly to avoid warnings
-        model_kwargs = {
-            "temperature": 0,
-            "retry_on_failure": True,
-            "retry_on_quota": True,
-            "initial_delay": 2,
-            "exponential_base": 2,
-            "max_delay": 10
-        }
+        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
+                                          temperature=0,
+                                          retry_on_failure=True,
+                                          retry_on_quota=True,
+                                          max_retries=3,
+                                          initial_delay=2,  # Start with 2 second delay
+                                          exponential_base=2,  # Double the delay with each retry
+                                          max_delay=10  # Maximum delay between retries
+                                          )
+        # # Configure model kwargs properly to avoid warnings
+        # model_kwargs = {
+        #     "temperature": 0,
+        #     "retry_on_failure": True,
+        #     "retry_on_quota": True,
+        #     "initial_delay": 2,
+        #     "exponential_base": 2,
+        #     "max_delay": 10
+        # }
         
-        self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            model_kwargs=model_kwargs,
-            max_retries=3  # This is a valid top-level parameter
-        )
+        # self.llm = ChatGroq(
+        #     model="llama-3.3-70b-versatile",
+        #     model_kwargs=model_kwargs,
+        #     max_retries=3  # This is a valid top-level parameter
+        # )
         
     @abstractmethod
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
