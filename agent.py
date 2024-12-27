@@ -39,15 +39,19 @@ class Agent:
         #                                   exponential_base=2,  # Double the delay with each retry
         #                                   max_delay=10  # Maximum delay between retries
         #                                   )
-        self.llm=ChatGroq(model="llama-3.3-70b-versatile",
-                          temperature=0,
-                          retry_on_failure=True,
-                          retry_on_quota=True,
-                          max_retries=3,
-                          initial_delay=2,  # Start with 2 second delay
-                          exponential_base=2,  # Double the delay with each retry
-                          max_delay=10  # Maximum delay between retries
-                        )
+        model_kwargs = {
+            "temperature": 0,
+            "retry_on_failure": True,
+            "retry_on_quota": True,
+            "initial_delay": 2,
+            "exponential_base": 2,
+            "max_delay": 10
+        }
+        self.llm = ChatGroq(
+            model="llama-3.3-70b-versatile",
+            model_kwargs=model_kwargs,
+            max_retries=3  # This is a valid top-level parameter
+        )
         self.web_search_tool = TavilySearchResults(k=3)
         self.app = self._build_workflow()
         self.db = DatabaseManager()
