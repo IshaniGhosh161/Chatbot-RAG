@@ -1,6 +1,7 @@
 from dotenv import load_dotenv
 import os
 from langchain_community.vectorstores import FAISS
+from langchain_groq import ChatGroq
 from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.tools.tavily_search import TavilySearchResults
 from typing import Literal, List, Dict, Any
@@ -28,16 +29,24 @@ MAX_CALLS_PER_MINUTE = 15
 class BaseAgent(ABC):
     """Abstract base class for all agents"""
     def __init__(self):
-        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
-                                          temperature=0,
-                                          retry_on_failure=True,
-                                          retry_on_quota=True,
-                                          max_retries=3,
-                                          initial_delay=2,  # Start with 2 second delay
-                                          exponential_base=2,  # Double the delay with each retry
-                                          max_delay=10  # Maximum delay between retries
-                                          )
-    
+        # self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
+        #                                   temperature=0,
+        #                                   retry_on_failure=True,
+        #                                   retry_on_quota=True,
+        #                                   max_retries=3,
+        #                                   initial_delay=2,  # Start with 2 second delay
+        #                                   exponential_base=2,  # Double the delay with each retry
+        #                                   max_delay=10  # Maximum delay between retries
+        #                                   )
+        self.llm=ChatGroq(model="llama-3.3-70b-versatile",
+                          temperature=0,
+                          retry_on_failure=True,
+                          retry_on_quota=True,
+                          max_retries=3,
+                          initial_delay=2,  # Start with 2 second delay
+                          exponential_base=2,  # Double the delay with each retry
+                          max_delay=10  # Maximum delay between retries
+                        )
     @abstractmethod
     def process(self, state: Dict[str, Any]) -> Dict[str, Any]:
         pass

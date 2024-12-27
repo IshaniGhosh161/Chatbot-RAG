@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 import os
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAIEmbeddings,ChatGoogleGenerativeAI
+from langchain_groq import ChatGroq
 from langchain_community.tools.tavily_search import TavilySearchResults
 from typing import Literal,List
 from typing_extensions import TypedDict
@@ -28,15 +29,24 @@ class Agent:
         self.embedding=GoogleGenerativeAIEmbeddings(model="models/embedding-001")
         self.vector_store = FAISS.load_local('faiss_index', self.embedding, allow_dangerous_deserialization=True,normalize_L2=True)
         self.retriever=self.vector_store.as_retriever()
-        self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
-                                          temperature=0,
-                                          retry_on_failure=True,
-                                          retry_on_quota=True,
-                                          max_retries=3,
-                                          initial_delay=2,  # Start with 2 second delay
-                                          exponential_base=2,  # Double the delay with each retry
-                                          max_delay=10  # Maximum delay between retries
-                                          )
+        # self.llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", 
+        #                                   temperature=0,
+        #                                   retry_on_failure=True,
+        #                                   retry_on_quota=True,
+        #                                   max_retries=3,
+        #                                   initial_delay=2,  # Start with 2 second delay
+        #                                   exponential_base=2,  # Double the delay with each retry
+        #                                   max_delay=10  # Maximum delay between retries
+        #                                   )
+        self.llm=ChatGroq(model="llama-3.3-70b-versatile",
+                          temperature=0,
+                          retry_on_failure=True,
+                          retry_on_quota=True,
+                          max_retries=3,
+                          initial_delay=2,  # Start with 2 second delay
+                          exponential_base=2,  # Double the delay with each retry
+                          max_delay=10  # Maximum delay between retries
+                        )
         self.web_search_tool = TavilySearchResults(k=3)
         self.app = self._build_workflow()
         self.db = DatabaseManager()
